@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "telegram-aggregator"
+version = "0.1.0"
+description = "Personal Telegram Intelligence Aggregator"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "telethon>=1.36.0",
+    "aiogram>=3.4.1",
+    "sqlalchemy>=2.0.29",
+    "asyncpg>=0.29.0",
+    "pgvector>=0.2.5",
+    "alembic>=1.13.1",
+    "pydantic>=2.7.1",
+    "pydantic-settings>=2.2.1",
+    "google-genai>=0.4.0",
+    "sentence-transformers>=2.7.0",
+    "gliner>=0.1.11",
+    "transformers>=4.40.1",
+    "torch>=2.3.0",
+    "scikit-learn>=1.4.0",
+    "nltk>=3.8.1",
+    "pillow>=10.3.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.1.1",
+    "pytest-asyncio>=0.23.6",
+    "ruff>=0.4.1",
+    "black>=24.4.0"
+]
