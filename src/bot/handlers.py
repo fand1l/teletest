@@ -164,6 +164,41 @@ async def cmd_find(message: types.Message):
         logger.error(f"Search failed: {e}", exc_info=True)
         await message.answer("An error occurred during the search.")
 
+@dp.message(Command("ask"))
+async def cmd_ask(message: types.Message):
+    """
+    RAG-grounded Q&A: retrieves only the top relevant messages (packed into
+    a ~18k token budget) and sends THEM to the LLM instead of the whole DB.
+    """
+    question = message.text.replace("/ask", "", 1).strip()
+    if not question:
+        await message.answer("Вкажіть питання. Приклад: /ask Що відбувалось у Харкові сьогодні?")
+        return
+
+    status_msg = await message.answer("🔎 Шукаю релевантні повідомлення в базі...")
+
+    try:
+        from src.core.rag.retriever import retrieve_context, build_context_block
+        from src.reasoning.intelligence import answer_question
+
+        async with AsyncSessionLocal() as session:
+            packed, used_tokens = await retrieve_context(session, question)
+            if not packed:
+                await status_msg.edit_text("Не знайшов релевантних повідомлень за цим запитом.")
+                return
+            context_block = await build_context_block(packed)
+
+        await status_msg.edit_text(
+            f"🧠 Знайдено {len(packed)} релевантних повідомлень (~{used_tokens} токенів). Генерую відповідь..."
+        )
+
+        answer = await answer_question(question, context_block)
+        await status_msg.delete()
+        await message.answer(answer, disable_web_page_preview=True)
+    except Exception as e:
+        logger.error(f"Ask failed: {e}", exc_info=True)
+        await status_msg.edit_text("❌ Виникла помилка під час пошуку відповіді.")
+
 @dp.message(Command("summary"))
 async def cmd_summary(message: types.Message):
     logger.info("Received /summary command from user %s", message.from_user.id)

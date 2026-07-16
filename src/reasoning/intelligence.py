@@ -4,9 +4,10 @@ from pydantic import BaseModel, Field
 
 from src.core.llm.factory import get_llm_provider
 from src.core.llm.prompts import (
-    DEDUPLICATION_PROMPT_TEMPLATE, 
+    DEDUPLICATION_PROMPT_TEMPLATE,
     SUMMARIZE_EVENT_PROMPT_TEMPLATE,
-    GLOBAL_SUMMARY_PROMPT_TEMPLATE
+    GLOBAL_SUMMARY_PROMPT_TEMPLATE,
+    RAG_ANSWER_PROMPT_TEMPLATE
 )
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,19 @@ async def summarize_new_event(raw_text: str) -> EventSummaryResult:
         prompt=prompt,
         response_schema=EventSummaryResult
     )
+
+async def answer_question(question: str, context_block: str) -> str:
+    """
+    Answers a user question using only the retrieved RAG context block.
+    """
+    logger.debug("Calling LLM for RAG-grounded answer...")
+
+    prompt = RAG_ANSWER_PROMPT_TEMPLATE.format(
+        question=question,
+        context=context_block
+    )
+
+    return await llm.generate_text_content(prompt=prompt)
 
 async def generate_global_summary(events_context: str) -> str:
     """

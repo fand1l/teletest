@@ -51,4 +51,31 @@ class MessageRepository(BaseRepository[Message]):
         result = await session.execute(stmt)
         return list(result.scalars().all())
 
+    async def find_similar_with_scores(
+        self,
+        session: AsyncSession,
+        embedding: list[float],
+        limit: int = 5,
+        threshold: float = 0.85,
+        within_hours: Optional[int] = 24,
+    ) -> List[tuple[Message, float]]:
+        """Like find_similar, but returns (message, cosine_similarity) pairs."""
+        distance = Message.embedding.cosine_distance(embedding)
+        distance_threshold = 1.0 - threshold
+
+        conditions = [
+            distance < distance_threshold,
+            Message.is_archived == False,
+        ]
+        if within_hours is not None:
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=within_hours)
+            conditions.append(Message.timestamp >= cutoff)
+
+        stmt = select(Message, distance.label("distance")).where(
+            and_(*conditions)
+        ).order_by(distance).limit(limit)
+
+        result = await session.execute(stmt)
+        return [(msg, 1.0 - dist) for msg, dist in result.all()]
+
 message_repo = MessageRepository()
