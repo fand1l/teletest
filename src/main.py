@@ -34,6 +34,9 @@ async def main():
         logger.info("Shutting down cleanly.")
         pipeline_task.cancel()
         bot_task.cancel()
+        # Wait for tasks to actually finish cancelling so DB sessions and
+        # network connections are released before the loop closes.
+        await asyncio.gather(pipeline_task, bot_task, return_exceptions=True)
 
 if __name__ == "__main__":
     try:

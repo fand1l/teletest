@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     # Application Config
     ACTIVE_RETENTION_HOURS: int = Field(24, description="Retention window for active messages in hours")
     SIMILARITY_THRESHOLD: float = Field(0.85, description="Cosine similarity threshold for event deduplication")
+    MESSAGE_QUEUE_MAX_SIZE: int = Field(1000, description="Max size of the internal ingest queue (backpressure buffer)")
+    TELETHON_FLOOD_SLEEP_THRESHOLD: int = Field(60, description="Telethon auto-sleeps on FloodWait errors up to this many seconds")
     
     # LLM Configuration
     LLM_PROVIDER: str = Field("gemini", description="The LLM provider to use (e.g. gemini, openai)")
