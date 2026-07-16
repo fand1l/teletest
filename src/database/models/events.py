@@ -3,7 +3,7 @@ from sqlalchemy import String, Text, DateTime, Float, ForeignKey, Enum
 from .base import Base
 import uuid
 import enum
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 class EventStatus(enum.Enum):
@@ -29,8 +29,8 @@ class Event(Base):
     status: Mapped[EventStatus] = mapped_column(Enum(EventStatus), default=EventStatus.NEW)
     confidence_score: Mapped[float] = mapped_column(Float, default=0.5)
     
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     updates: Mapped[List["EventUpdate"]] = relationship(back_populates="event", order_by="EventUpdate.timestamp")
 
@@ -41,7 +41,7 @@ class EventUpdate(Base):
     event_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("events.id"), nullable=False)
     message_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("messages.id"), nullable=False)
     
-    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     
     update_type: Mapped[UpdateType] = mapped_column(Enum(UpdateType), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True) # LLM explanation of the update

@@ -26,17 +26,25 @@ def get_gliner_model():
         _gliner_model = GLiNER.from_pretrained("urchade/gliner_multi-v2.1")
     return _gliner_model
 
-def generate_embedding(text: str) -> List[float]:
-    """
-    Generates a 384-dimensional embedding vector for the given text.
-    """
-    # e5 models usually expect "passage: " prefix for indexing and "query: " for search
-    prefix = "passage: "
+def _encode(text: str, prefix: str) -> List[float]:
     model = get_embedding_model()
-    
-    # We use numpy to list conversion
     embedding = model.encode(f"{prefix}{text}", normalize_embeddings=True)
     return embedding.tolist()
+
+def generate_embedding(text: str) -> List[float]:
+    """
+    Generates a 384-dimensional embedding for a DOCUMENT being indexed.
+    e5 models require the "passage: " prefix for indexed texts.
+    """
+    return _encode(text, "passage: ")
+
+def generate_query_embedding(text: str) -> List[float]:
+    """
+    Generates a 384-dimensional embedding for a SEARCH QUERY.
+    e5 models require the "query: " prefix for queries — using the passage
+    prefix for queries measurably degrades retrieval quality.
+    """
+    return _encode(text, "query: ")
 
 def extract_entities(text: str) -> List[Dict[str, Any]]:
     """

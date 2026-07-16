@@ -4,7 +4,7 @@ from src.bot.main import dp
 from src.database.session import AsyncSessionLocal
 from src.database.repositories.events import event_repo
 from src.database.repositories.messages import message_repo
-from src.pipeline.nlp import generate_embedding
+from src.pipeline.nlp import generate_query_embedding
 import logging
 from sqlalchemy import text
 
@@ -134,18 +134,19 @@ async def cmd_find(message: types.Message):
     await message.answer(f"Searching for: {query}...")
     
     try:
-        # Generate embedding for the search query
-        query_embedding = generate_embedding(query)
-        
+        # Generate embedding for the search query (blocking model inference
+        # is offloaded to a thread so the bot stays responsive).
+        import asyncio
+        query_embedding = await asyncio.to_thread(generate_query_embedding, query)
+
         async with AsyncSessionLocal() as session:
-            # Semantic search across recent active messages
-            # For a full search, we would search across the archive as well, 
-            # but we use the same repository method for now.
+            # Semantic search across the whole archive (no time window)
             results = await message_repo.find_similar(
-                session, 
-                embedding=query_embedding, 
-                limit=5, 
-                threshold=0.7 # lower threshold for search
+                session,
+                embedding=query_embedding,
+                limit=5,
+                threshold=0.7,  # lower threshold for search
+                within_hours=None
             )
             
             if not results:

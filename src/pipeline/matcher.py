@@ -42,10 +42,11 @@ async def process_event_matching(session: AsyncSession, new_message: Message, en
     """
     # 1. Find semantically similar recent messages
     similar_messages = await message_repo.find_similar(
-        session, 
+        session,
         embedding=new_message.embedding,
         limit=5,
-        threshold=settings.SIMILARITY_THRESHOLD
+        threshold=settings.SIMILARITY_THRESHOLD,
+        within_hours=settings.ACTIVE_RETENTION_HOURS
     )
     
     # Remove self if returned
