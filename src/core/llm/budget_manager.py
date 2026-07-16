@@ -20,9 +20,17 @@ class TokenBudgetManager:
         self.request_history = deque() # Stores tuples of (timestamp, 1)
         self.token_history = deque()   # Stores tuples of (timestamp, token_count)
         self.lock = asyncio.Lock()
-        
-        # We use cl100k_base for fast approximation of tokens
-        self.encoder = tiktoken.get_encoding("cl100k_base")
+
+        # Lazily initialized: tiktoken may fetch the encoding file on first
+        # use, and we don't want that cost (or a network call) at import time.
+        self._encoder = None
+
+    @property
+    def encoder(self):
+        if self._encoder is None:
+            # We use cl100k_base for fast approximation of tokens
+            self._encoder = tiktoken.get_encoding("cl100k_base")
+        return self._encoder
 
     def estimate_tokens(self, text: str) -> int:
         """Estimates the number of tokens in the given text."""
@@ -89,5 +97,10 @@ class TokenBudgetManager:
                 await asyncio.sleep(1.0)
                 waited_total += 1.0
 
-# Global instance
-budget_manager = TokenBudgetManager()
+# Global instance, configured from settings so quotas can be tuned per deployment
+from src.config import settings
+
+budget_manager = TokenBudgetManager(
+    tpm_limit=settings.LLM_TPM_LIMIT,
+    rpm_limit=settings.LLM_RPM_LIMIT
+)

@@ -88,40 +88,11 @@ Organize it elegantly.
 Respond ONLY with the HTML output.
 """
 
-async def classify_events_in_batches(events: List[Event], session, batch_size: int = 20) -> None:
-    """Classifies events into topics in batches to save LLM calls."""
-    for i in range(0, len(events), batch_size):
-        batch = events[i:i+batch_size]
-        events_text = "\n".join([f"ID: {e.id}\nTitle: {e.title}\nSummary: {e.current_summary}\n---" for e in batch])
-        
-        prompt = BATCH_CLASSIFICATION_PROMPT.format(
-            topics=", ".join(DEFAULT_TOPICS),
-            events_text=events_text
-        )
-        
-        try:
-            result = await llm.generate_structured_content(prompt, response_schema=EventClassifications)
-            
-            # Convert list of objects to a quick dictionary for mapping
-            topic_map = {item.event_id: item.topic for item in result.classifications}
-            
-            for event in batch:
-                topic = topic_map.get(str(event.id), "Інше")
-                if topic not in DEFAULT_TOPICS and topic != "Спам/Реклама":
-                    topic = "Інше"
-                event.topic = topic
-                session.add(event)
-            await session.commit()
-        except Exception as e:
-            logger.error(f"Failed to classify batch: {e}")
-            # Fallback to "Інше" on failure
-            for event in batch:
-                event.topic = "Інше"
-                session.add(event)
-            await session.commit()
-
-def chunk_events(events: List[Event], max_tokens_per_chunk: int = 40000) -> List[List[Event]]:
-    """Splits events into chunks that fit comfortably within the LLM context."""
+def chunk_events(events: List[Event], max_tokens_per_chunk: Optional[int] = None) -> List[List[Event]]:
+    """Splits events into chunks that fit within the configured RAG context budget."""
+    if max_tokens_per_chunk is None:
+        from src.config import settings
+        max_tokens_per_chunk = settings.RAG_CONTEXT_TOKENS
     chunks = []
     current_chunk = []
     current_tokens = 0
@@ -145,43 +116,6 @@ async def summarize_chunk(topic: str, events_chunk: List[Event]) -> str:
     events_text = "\n\n".join([f"- {e.title}: {e.current_summary}" for e in events_chunk])
     prompt = CHUNK_SUMMARY_PROMPT.format(topic=topic, events_text=events_text)
     return await llm.generate_text_content(prompt)
-
-async def update_topic_summary(topic: str, existing_summary: Optional[TopicSummary], new_events: List[Event], session) -> TopicSummary:
-    """Updates the summary for a specific topic with new events."""
-    if not new_events:
-        return existing_summary
-        
-    chunks = chunk_events(new_events)
-    intermediate_summaries = []
-    
-    for chunk in chunks:
-        summary = await summarize_chunk(topic, chunk)
-        intermediate_summaries.append(summary)
-        
-    merged_new_events_summary = "\n\n---\n\n".join(intermediate_summaries)
-    
-    existing_text = existing_summary.content_html if existing_summary else "No existing summary."
-    
-    prompt = TOPIC_UPDATE_PROMPT.format(
-        topic=topic,
-        existing_summary=existing_text,
-        new_events_summary=merged_new_events_summary
-    )
-    
-    final_html = await llm.generate_text_content(prompt)
-    
-    if not existing_summary:
-        existing_summary = TopicSummary(topic=topic)
-        session.add(existing_summary)
-        
-    existing_summary.content_html = final_html
-    
-    # Mark the latest processed event timestamp
-    latest_event_time = max((e.created_at for e in new_events if e.created_at), default=datetime.utcnow().replace(tzinfo=timezone.utc))
-    existing_summary.last_event_timestamp = latest_event_time
-        
-    await session.commit()
-    return existing_summary
 
 async def generate_final_global_summary(topic_summaries: List[TopicSummary]) -> str:
     """Combines all thematic summaries into the final global HTML summary."""
@@ -314,7 +248,7 @@ async def run_hierarchical_summarization(progress_callback=None) -> str:
                 existing = TopicSummary(topic=topic)
                 session.add(existing)
             existing.content_html = final_html
-            latest_event_time = max((e.created_at for e in new_events if e.created_at), default=datetime.utcnow().replace(tzinfo=timezone.utc))
+            latest_event_time = max((e.created_at for e in new_events if e.created_at), default=datetime.now(timezone.utc))
             existing.last_event_timestamp = latest_event_time
             await session.commit()
             
