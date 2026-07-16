@@ -9,6 +9,16 @@ class MessageRepository(BaseRepository[Message]):
     def __init__(self):
         super().__init__(Message)
 
+    async def exists(self, session: AsyncSession, channel_id: int, telegram_msg_id: int) -> bool:
+        """True if this Telegram message is already stored (re-fetch protection)."""
+        stmt = select(Message.id).where(
+            and_(
+                Message.channel_id == channel_id,
+                Message.telegram_msg_id == telegram_msg_id,
+            )
+        ).limit(1)
+        return (await session.execute(stmt)).scalar_one_or_none() is not None
+
     async def get_recent_messages(self, session: AsyncSession, hours: int = 24) -> List[Message]:
         cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
         stmt = select(Message).where(

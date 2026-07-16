@@ -9,7 +9,6 @@ from sqlalchemy import text
 
 from src.bot.main import dp
 from src.database.session import AsyncSessionLocal
-from src.database.repositories.events import event_repo
 from src.database.repositories.messages import message_repo
 from src.pipeline.nlp import generate_query_embedding
 
@@ -42,6 +41,8 @@ WELCOME_TEXT = (
     "<blockquote>Відповідь ШІ на основі найрелевантніших повідомлень бази (RAG)</blockquote>\n"
     "📰 /summary\n"
     "<blockquote>Тематичне зведення (SITREP) за активними подіями</blockquote>\n"
+    "📡 /channels\n"
+    "<blockquote>Керування каналами моніторингу (увімкнути/вимкнути збір)</blockquote>\n"
     "📥 /fetch_history <code>[N]</code>\n"
     "<blockquote>Завантажити останні N повідомлень з кожного каналу (типово 10)</blockquote>\n"
     "🗑 /clear_db\n"
@@ -108,98 +109,91 @@ async def cmd_fetch_history(message: types.Message):
         f"Статус: <i>отримую список каналів...</i>"
     )
     try:
+        from datetime import timezone
         from src.core.channels_config import get_all_monitored_channels
         from src.collector.client import client
-        from src.database.models.events import EventStatus, UpdateType
-        from src.database.repositories.channels import channel_repo
-        from datetime import timezone
-        from telethon.errors import FloodWaitError
+        from src.pipeline.orchestrator import process_message
 
         channel_ids = await get_all_monitored_channels()
-        all_messages = []
+        payloads = []
 
+        # Phase 1: collect raw messages from Telegram.
+        # Telethon itself sleeps through FloodWait up to flood_sleep_threshold;
+        # longer waits raise and we skip that channel instead of hanging.
         for ch_idx, chat_id in enumerate(channel_ids, 1):
             try:
                 await status_msg.edit_text(
-                    f"📥 <b>Завантаження історії</b>\n"
+                    f"📥 <b>Завантаження історії (1/2)</b>\n"
                     f"Канал: <code>{ch_idx}/{len(channel_ids)}</code>\n"
-                    f"Зібрано повідомлень: <code>{len(all_messages)}</code>"
+                    f"Зібрано повідомлень: <code>{len(payloads)}</code>"
                 )
             except Exception:
                 pass  # "message is not modified" and similar are non-fatal
 
-            while True:
+            try:
+                entity = await client.get_entity(chat_id)
+                chat_title = getattr(entity, 'title', 'Unknown')
+
+                async for msg in client.iter_messages(chat_id, limit=limit):
+                    if not msg.text or not msg.date:
+                        continue
+                    payloads.append({
+                        'telegram_msg_id': msg.id,
+                        'channel_id': chat_id,
+                        'channel_name': chat_title,
+                        'timestamp': msg.date.astimezone(timezone.utc),
+                        'sender': None,
+                        'forwarded_from': None,
+                        'raw_text': msg.text,
+                        'media_type': None,
+                        'has_media': msg.media is not None,
+                    })
+            except Exception as e:
+                logger.error(f"Failed to fetch from {chat_id}: {e}")
+                continue  # Skip this chat and move to the next
+
+        # Sort chronologically (oldest to newest) so deduplication sees
+        # the original report before its reposts.
+        payloads.sort(key=lambda p: p['timestamp'])
+
+        # Phase 2: run each message through the SAME pipeline as live intake:
+        # spam filter -> embedding -> entities -> event matching/dedup.
+        stats = {'ok': 0, 'spam': 0, 'empty': 0, 'duplicate': 0}
+        for p_idx, payload in enumerate(payloads, 1):
+            if p_idx == 1 or p_idx % 10 == 0:
                 try:
-                    async for msg in client.iter_messages(chat_id, limit=limit):
-                        if msg.text and msg.date:
-                            all_messages.append({'chat_id': chat_id, 'msg': msg})
-                    break  # Success, move to the next chat
-                except FloodWaitError as e:
-                    logger.warning(f"Flood wait required: {e.seconds} seconds.")
-                    try:
-                        await status_msg.edit_text(
-                            f"📥 <b>Завантаження історії</b>\n"
-                            f"⏸ Telegram обмежив частоту запитів.\n"
-                            f"Очікування: <code>{e.seconds} с</code>..."
-                        )
-                    except Exception:
-                        pass
-                    await asyncio.sleep(e.seconds)
-                except Exception as e:
-                    logger.error(f"Failed to fetch from {chat_id}: {e}")
-                    break  # Skip this chat and move to the next on other errors
+                    await status_msg.edit_text(
+                        f"🧠 <b>Обробка історії (2/2)</b>\n"
+                        f"Повідомлення: <code>{p_idx}/{len(payloads)}</code>\n"
+                        f"Додано: <code>{stats['ok']}</code> · "
+                        f"Дублікати: <code>{stats['duplicate']}</code> · "
+                        f"Спам: <code>{stats['spam']}</code>"
+                    )
+                except Exception:
+                    pass
 
-        # Sort chronologically (oldest to newest)
-        all_messages.sort(key=lambda x: x['msg'].date)
-
-        async with AsyncSessionLocal() as session:
-            count = 0
-            for item in all_messages:
-                chat_id = item['chat_id']
-                telethon_msg = item['msg']
-
-                chat = await telethon_msg.get_chat()
-                chat_title = getattr(chat, 'title', 'Unknown')
-
-                await channel_repo.get_or_create(session, channel_id=chat_id, name=chat_title)
-
-                sender = await telethon_msg.get_sender()
-                sender_name = getattr(sender, 'username', getattr(sender, 'first_name', 'Unknown')) if sender else None
-
-                db_msg = await message_repo.create_and_commit(session, obj_in={
-                    "telegram_msg_id": telethon_msg.id,
-                    "channel_id": chat_id,
-                    "timestamp": telethon_msg.date.astimezone(timezone.utc),
-                    "sender": sender_name,
-                    "raw_text": telethon_msg.text,
-                    "embedding": None
-                })
-
-                title = f"Історія: {chat_title}"
-                current_summary = telethon_msg.text or ""
-
-                new_event = event_repo.create(session, obj_in={
-                    "title": title,
-                    "current_summary": current_summary,
-                    "status": EventStatus.NEW
-                })
-                new_event.updated_at = db_msg.timestamp
-                new_event.created_at = db_msg.timestamp
-                await session.flush()
-
-                await event_repo.add_update(
+            async with AsyncSessionLocal() as session:
+                already_stored = await message_repo.exists(
                     session,
-                    event_id=new_event.id,
-                    message_id=db_msg.id,
-                    update_type=UpdateType.NEW_DETAIL
+                    channel_id=payload['channel_id'],
+                    telegram_msg_id=payload['telegram_msg_id']
                 )
-                await session.commit()
-                count += 1
+            if already_stored:
+                stats['duplicate'] += 1
+                continue
+
+            try:
+                result = await process_message(payload)
+                stats[result] = stats.get(result, 0) + 1
+            except Exception as e:
+                logger.error(f"Pipeline failed for history message {payload['telegram_msg_id']}: {e}")
 
         await status_msg.edit_text(
-            f"✅ <b>Історію завантажено</b>\n"
-            f"Збережено повідомлень: <code>{count}</code>\n"
-            f"Каналів опрацьовано: <code>{len(channel_ids)}</code>"
+            f"✅ <b>Історію завантажено та оброблено</b>\n"
+            f"Каналів: <code>{len(channel_ids)}</code>\n"
+            f"➕ Додано подій/повідомлень: <code>{stats['ok']}</code>\n"
+            f"♻️ Пропущено дублікатів: <code>{stats['duplicate']}</code>\n"
+            f"🚫 Відфільтровано (спам/порожні): <code>{stats['spam'] + stats['empty']}</code>"
         )
 
     except Exception as e:
@@ -302,6 +296,101 @@ async def cmd_ask(message: types.Message):
     except Exception as e:
         logger.error(f"Ask failed: {e}", exc_info=True)
         await status_msg.edit_text("❌ Помилка під час пошуку відповіді. Спробуйте пізніше.")
+
+
+# ------------------------------------------------------------- /channels ---
+
+_CHANNELS_PAGE_SIZE = 10
+
+
+async def _channels_view(page: int):
+    """Builds the text + keyboard for the channel management screen."""
+    from src.core.channels_config import get_channels_overview
+
+    overview = await get_channels_overview()
+    items = sorted(overview.items(), key=lambda kv: (kv[1].get('name') or '').lower())
+
+    total = len(items)
+    enabled_count = sum(1 for _, info in items if info.get('enabled', True))
+    total_pages = max(1, (total + _CHANNELS_PAGE_SIZE - 1) // _CHANNELS_PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+
+    text_value = (
+        f"📡 <b>Канали моніторингу</b>\n"
+        f"Всього: <code>{total}</code> · Активних: <code>{enabled_count}</code>\n\n"
+        f"Натисніть на канал, щоб увімкнути/вимкнути збір:"
+    )
+
+    rows = []
+    start = page * _CHANNELS_PAGE_SIZE
+    for cid, info in items[start:start + _CHANNELS_PAGE_SIZE]:
+        mark = "✅" if info.get('enabled', True) else "⛔️"
+        name = (info.get('name') or str(cid))[:40]
+        rows.append([InlineKeyboardButton(
+            text=f"{mark} {name}",
+            callback_data=f"ch_toggle:{cid}:{page}"
+        )])
+
+    if total_pages > 1:
+        rows.append([
+            InlineKeyboardButton(text="◀️", callback_data=f"ch_page:{(page - 1) % total_pages}"),
+            InlineKeyboardButton(text=f"{page + 1}/{total_pages}", callback_data="ch_noop"),
+            InlineKeyboardButton(text="▶️", callback_data=f"ch_page:{(page + 1) % total_pages}"),
+        ])
+
+    return text_value, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@dp.message(Command("channels"))
+async def cmd_channels(message: types.Message):
+    text_value, keyboard = await _channels_view(page=0)
+    if not keyboard.inline_keyboard:
+        await message.answer(
+            "📡 Список каналів порожній.\n"
+            "Канали з'являться тут автоматично після підключення юзербота."
+        )
+        return
+    await message.answer(text_value, reply_markup=keyboard)
+
+
+@dp.callback_query(F.data == "ch_noop")
+async def cb_channels_noop(callback: types.CallbackQuery):
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("ch_page:"))
+async def cb_channels_page(callback: types.CallbackQuery):
+    page = int(callback.data.split(":")[1])
+    text_value, keyboard = await _channels_view(page=page)
+    try:
+        await callback.message.edit_text(text_value, reply_markup=keyboard)
+    except Exception:
+        pass  # "message is not modified"
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("ch_toggle:"))
+async def cb_channels_toggle(callback: types.CallbackQuery):
+    from src.core.channels_config import get_channels_overview, set_channel_enabled
+
+    _, cid_str, page_str = callback.data.split(":")
+    channel_id = int(cid_str)
+
+    overview = await get_channels_overview()
+    info = overview.get(channel_id)
+    if info is None:
+        await callback.answer("Канал не знайдено в конфігурації", show_alert=True)
+        return
+
+    new_state = not info.get('enabled', True)
+    await set_channel_enabled(channel_id, new_state)
+
+    text_value, keyboard = await _channels_view(page=int(page_str))
+    try:
+        await callback.message.edit_text(text_value, reply_markup=keyboard)
+    except Exception:
+        pass
+    await callback.answer("✅ Моніторинг увімкнено" if new_state else "⛔️ Моніторинг вимкнено")
 
 
 # -------------------------------------------------------------- /summary ---

@@ -47,3 +47,26 @@ async def test_channels_config_lifecycle(tmp_path):
             "username": None,
             "enabled": True
         }
+
+@pytest.mark.asyncio
+async def test_overview_and_toggle(tmp_path):
+    temp_config_file = tmp_path / "channels_config.json"
+
+    with patch("src.core.channels_config.CONFIG_PATH", str(temp_config_file)):
+        from src.core.channels_config import get_channels_overview, set_channel_enabled
+
+        await is_channel_monitored(111, "Alpha", "alpha")
+        await is_channel_monitored(222, "Beta", None)
+
+        overview = await get_channels_overview()
+        assert set(overview.keys()) == {111, 222}
+        assert overview[111]["enabled"] is True
+
+        # Toggle off and verify both overview and monitoring check agree
+        assert await set_channel_enabled(111, False) is True
+        overview = await get_channels_overview()
+        assert overview[111]["enabled"] is False
+        assert await is_channel_monitored(111, "Alpha", "alpha") is False
+
+        # Unknown channel returns False
+        assert await set_channel_enabled(999, True) is False

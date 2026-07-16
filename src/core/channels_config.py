@@ -114,6 +114,16 @@ async def get_all_monitored_channels() -> list[int]:
         return [int(k) for k, v in config.items() if v.get("enabled", True)]
 
 
+async def get_channels_overview() -> Dict[int, Dict[str, Any]]:
+    """
+    Returns {channel_id: {"name", "username", "enabled"}} for ALL known
+    channels (both enabled and disabled) — used by the bot management UI.
+    """
+    async with config_lock:
+        config = await asyncio.to_thread(_load_config)
+        return {int(k): dict(v) for k, v in config.items()}
+
+
 async def set_channel_enabled(channel_id: int, enabled: bool) -> bool:
     """
     Enables/disables monitoring for a channel. Returns True if the channel existed.
